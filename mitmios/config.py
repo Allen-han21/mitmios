@@ -47,27 +47,33 @@ def list_configs():
 
     table = Table(title="Tracker Configurations")
     table.add_column("Name", style="bold")
+    table.add_column("Matchers", justify="right")
     table.add_column("Source", style="dim")
-    table.add_column("Path")
+    table.add_column("Description")
+
+    def add_config_row(f: Path, source: str):
+        try:
+            data = yaml.safe_load(f.read_text())
+            name = data.get("name", f.stem)
+            n_matchers = str(len(data.get("matchers", [])))
+            desc = data.get("description", "")
+            table.add_row(name, n_matchers, source, desc)
+        except yaml.YAMLError:
+            table.add_row(f.stem, "?", source, "[red]parse error[/red]")
 
     # Built-in configs
     if BUILTIN_CONFIGS.exists():
         for f in sorted(BUILTIN_CONFIGS.glob("*.yaml")):
-            try:
-                data = yaml.safe_load(f.read_text())
-                table.add_row(data.get("name", f.stem), "built-in", str(f))
-            except yaml.YAMLError:
-                table.add_row(f.stem, "built-in", str(f))
+            add_config_row(f, "built-in")
 
     # User configs
     for f in sorted(CONFIG_DIR.glob("*.yaml")):
-        try:
-            data = yaml.safe_load(f.read_text())
-            table.add_row(data.get("name", f.stem), "user", str(f))
-        except yaml.YAMLError:
-            table.add_row(f.stem, "user", str(f))
+        add_config_row(f, "user")
 
     console.print(table)
+    console.print()
+    console.print(f"[dim]Built-in: {BUILTIN_CONFIGS}[/dim]")
+    console.print(f"[dim]User:     {CONFIG_DIR}[/dim]")
 
 
 def add_config(path: Path):
@@ -84,8 +90,17 @@ def add_config(path: Path):
     console.print(f"[green]Config added:[/green] {dest}")
 
 
+REQUIRED_ROOT_FIELDS = {"name", "description", "matchers", "display"}
+REQUIRED_MATCHER_FIELDS = {"id", "label", "color", "host", "path_pattern"}
+VALID_EXTRACTOR_SOURCES = {
+    "request.query", "request.body", "response.body",
+    "request.header", "response.header",
+}
+VALID_COLUMN_TYPES = {"text", "code", "badge", "timestamp", "status_code"}
+
+
 def validate_config(path: Path, quiet: bool = False):
-    """Validate a tracker config file."""
+    """Validate a tracker config against the TrackerConfig schema."""
     if not path.exists():
         console.print(f"[red]File not found:[/red] {path}")
         raise typer.Exit(1)
@@ -100,18 +115,50 @@ def validate_config(path: Path, quiet: bool = False):
     if not isinstance(data, dict):
         errors.append("Root must be a mapping")
     else:
-        if "name" not in data:
-            errors.append("Missing required field: name")
-        if "matchers" not in data:
-            errors.append("Missing required field: matchers")
-        elif not isinstance(data["matchers"], list):
-            errors.append("matchers must be a list")
-        else:
-            for i, m in enumerate(data["matchers"]):
-                if "id" not in m:
-                    errors.append(f"matchers[{i}]: missing 'id'")
-                if "host" not in m and "host_pattern" not in m:
-                    errors.append(f"matchers[{i}]: must have 'host' or 'host_pattern'")
+        # Root required fields
+        missing = REQUIRED_ROOT_FIELDS - set(data.keys())
+        if missing:
+            for f in sorted(missing):
+                errors.append(f"Missing required field: {f}")
+
+        # Matchers validation
+        matchers = data.get("matchers")
+        if matchers is not None:
+            if not isinstance(matchers, list):
+                errors.append("matchers must be a list")
+            else:
+                for i, m in enumerate(matchers):
+                    m_missing = REQUIRED_MATCHER_FIELDS - set(m.keys())
+                    for f in sorted(m_missing):
+                        errors.append(f"matchers[{i}]: missing '{f}'")
+
+        # Extractors validation
+        extractors = data.get("extractors")
+        if extractors is not None and isinstance(extractors, list):
+            for i, ex in enumerate(extractors):
+                if "source" not in ex:
+                    errors.append(f"extractors[{i}]: missing 'source'")
+                elif ex["source"] not in VALID_EXTRACTOR_SOURCES:
+                    errors.append(f"extractors[{i}]: invalid source '{ex['source']}'")
+                if "field" not in ex:
+                    errors.append(f"extractors[{i}]: missing 'field'")
+                if "display_name" not in ex:
+                    errors.append(f"extractors[{i}]: missing 'display_name'")
+
+        # Display validation
+        display = data.get("display")
+        if display is not None and isinstance(display, dict):
+            columns = display.get("columns")
+            if columns is not None and isinstance(columns, list):
+                for i, col in enumerate(columns):
+                    if "field" not in col:
+                        errors.append(f"display.columns[{i}]: missing 'field'")
+                    if "label" not in col:
+                        errors.append(f"display.columns[{i}]: missing 'label'")
+                    if "type" not in col:
+                        errors.append(f"display.columns[{i}]: missing 'type'")
+                    elif col["type"] not in VALID_COLUMN_TYPES:
+                        errors.append(f"display.columns[{i}]: invalid type '{col['type']}'")
 
     if errors:
         console.print(f"[red]Validation errors in {path.name}:[/red]")
@@ -120,39 +167,51 @@ def validate_config(path: Path, quiet: bool = False):
         raise typer.Exit(1)
 
     if not quiet:
-        console.print(f"[green]Valid:[/green] {path.name} ({data.get('name', 'unnamed')})")
+        name = data.get("name", "unnamed")
+        n_matchers = len(data.get("matchers", []))
+        n_extractors = len(data.get("extractors", []))
+        console.print(f"[green]Valid:[/green] {path.name} ({name}, {n_matchers} matchers, {n_extractors} extractors)")
 
 
 def show_example():
-    """Print an example tracker config."""
+    """Print an example tracker config matching the TrackerConfig schema."""
     example = """\
-# Example: Track a custom analytics endpoint
+[bold]# Example: Track a custom analytics endpoint[/bold]
+[dim]# Save as ~/.config/mitmios/trackers/my-analytics.yaml[/dim]
+
 name: "My App Analytics"
 description: "Custom analytics event tracking"
 
 matchers:
-  - id: "analytics_event"
-    label: "Analytics Event"
+  - id: "event_post"
+    label: "Event"
     color: "#8b5cf6"
     host: "analytics.myapp.com"
-    path_pattern: "/v1/events"
+    path_pattern: "/v1/events(\\\\?|$)"
+  - id: "identify"
+    label: "Identify"
+    color: "#3b82f6"
+    host: "analytics.myapp.com"
+    path_pattern: "/v1/identify"
 
 extractors:
-  - source: "request.body"
-    format: "json"
-    fields:
-      - path: "event_name"
-        display_name: "Event Name"
-        type: "badge"
-      - path: "timestamp"
-        display_name: "Timestamp"
-        type: "timestamp"
+  - source: "request.query"
+    field: "event_name"
+    display_name: "Event Name"
+  - source: "request.header"
+    field: "x-api-key"
+    display_name: "API Key"
 
 display:
   type: "event_table"
   columns:
-    - { field: "event_name", label: "Event", type: "badge" }
+    - { field: "Event Name", label: "Event", type: "badge" }
+    - { field: "matcher_label", label: "Type", type: "badge" }
     - { field: "timestamp", label: "Time", type: "timestamp" }
+    - { field: "API Key", label: "API Key", type: "code" }
     - { field: "status_code", label: "Status", type: "status_code" }
 """
     console.print(example)
+    console.print()
+    console.print("[dim]Extractor sources: request.query, request.header, response.header, request.body, response.body[/dim]")
+    console.print("[dim]Column types: text, code, badge, timestamp, status_code[/dim]")

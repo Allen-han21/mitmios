@@ -39,7 +39,30 @@ def run_setup():
 
     console.print()
 
-    # Step 2: Install to iOS simulator keychain
+    # Step 2: Trust in macOS system keychain
+    console.print("[bold]Adding CA to macOS trusted certificates...[/bold]")
+    try:
+        result = subprocess.run(
+            [
+                "security", "add-trusted-cert", "-d",
+                "-r", "trustRoot",
+                "-k", "/Library/Keychains/System.keychain",
+                str(cert_file),
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            console.print("  [green]Added to system keychain (may require password)[/green]")
+        else:
+            console.print(f"  [yellow]Could not auto-add: {result.stderr.strip()}[/yellow]")
+            console.print("  Run manually with sudo if needed:")
+            console.print(f"  [cyan]sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {cert_file}[/cyan]")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        console.print("  [yellow]security command not available[/yellow]")
+
+    console.print()
+
+    # Step 3: Install to iOS simulator keychain
     from mitmios.proxy import get_booted_simulators
     simulators = get_booted_simulators()
 
@@ -64,7 +87,7 @@ def run_setup():
 
     console.print()
 
-    # Step 3: Manual instructions fallback
+    # Step 4: Manual instructions fallback
     console.print(Panel(
         "[bold]Manual Certificate Installation[/bold]\n\n"
         "If automatic installation didn't work:\n\n"
