@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    name: Build & Publish to PyPI
+    runs-on: macos-latest
+    environment: release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Install PyYAML for build script
+        run: pip install pyyaml
+
+      # Step 1: Build frontend (YAML → TS → Vite bundle)
+      - name: Build frontend
+        run: |
+          chmod +x scripts/build-frontend.sh
+          ./scripts/build-frontend.sh
+
+      # Step 2: Copy built assets into Python package
+      - name: Package frontend assets
+        run: |
+          BUILT_DIR="mitmproxy/web/built"
+          PKG_ASSETS="mitmios/web_assets"
+          if [ -d "$BUILT_DIR" ]; then
+            mkdir -p "$PKG_ASSETS"
+            cp -r "$BUILT_DIR"/* "$PKG_ASSETS/"
+            echo "Copied frontend assets to $PKG_ASSETS"
+            ls -la "$PKG_ASSETS/"
+          else
+            echo "Warning: No built frontend found at $BUILT_DIR"
+          fi
+
+      # Step 3: Build Python package
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+
+      # Step 4: Publish to PyPI
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+      # Step 5: Create GitHub Release
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "mitmios v${{ steps.version.outputs.version }}"
+          body: |
+            ## mitmios v${{ steps.version.outputs.version }}
+
+            ### Install
+            ```bash
+            uv tool install mitmios==${{ steps.version.outputs.version }}
+            # or
+            pip install mitmios==${{ steps.version.outputs.version }}
+            ```
+
+            ### Changes
+            See [CHANGELOG](https://github.com/Allen-han21/mitmios/commits/v${{ steps.version.outputs.version }}) for details.
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, 'rc') || contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'alpha') }}
+          files: |
+            dist/*

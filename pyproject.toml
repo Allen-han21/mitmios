@@ -43,4 +43,4 @@ build-backend = "setuptools.build_meta"
 include = ["mitmios*"]
 
 [tool.setuptools.package-data]
-mitmios = ["configs/*.yaml"]
+mitmios = ["configs/*.yaml", "web_assets/**/*"]

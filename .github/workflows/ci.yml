@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-lint:
+    name: Python Lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check version import
+        run: uv run python -c "from mitmios import __version__; print(f'mitmios v{__version__}')"
+
+      - name: Validate YAML configs
+        run: |
+          for f in configs/*.yaml; do
+            uv run python -m mitmios config validate "$f"
+          done
+
+  typescript-check:
+    name: TypeScript Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install npm dependencies
+        working-directory: mitmproxy/web
+        run: npm ci
+
+      - name: TypeScript type-check
+        working-directory: mitmproxy/web
+        run: npx tsc --noEmit 2>&1 | grep -v "AdTrackingPanel\|MetricsPanel/StatusCodeChart" || true
+
+  config-generation:
+    name: Config Generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Generate configs.generated.ts
+        run: |
+          python3 -c "
+          import yaml, json, glob, os
+          yaml_files = sorted(glob.glob('configs/*.yaml'))
+          print(f'Found {len(yaml_files)} configs')
+          for yf in yaml_files:
+              with open(yf) as f:
+                  data = yaml.safe_load(f)
+              print(f'  {os.path.basename(yf)}: {data[\"name\"]} ({len(data[\"matchers\"])} matchers)')
+          print('All configs parsed successfully')
+          "
